@@ -1,76 +1,87 @@
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_score, learning_curve
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, roc_auc_score
+from imblearn.over_sampling import SMOTE
+
+
+def оценить_модель(model, X_test, y_test, название_модели="Модель"):
+    y_pred = model.predict(X_test)
+    y_pred_prob = model.predict_proba(X_test)[:, 1]
+    
+    print(f"Оценка {название_модели}:")
+    print(classification_report(y_test, y_pred))
+    print("Матрица ошибок:")
+    print(confusion_matrix(y_test, y_pred))
+    print(f"Точность: {accuracy_score(y_test, y_pred):.4f}")
+    print(f"ROC-AUC: {roc_auc_score(y_test, y_pred_prob):.4f}\n")
+
 
 # Загрузка данных
 data = pd.read_csv('/Users/dmitriy/Downloads/creditcard_2023.csv')
 
-# Посмотрим первые строки датасета
 print(data.head())
-
-# Выводим общую статистику по датасету
 print(data.describe())
 
-# Выводим количество обычных и мошеннических транзакций
 fraud_count = data[data['Class'] == 1].shape[0]
 normal_count = data[data['Class'] == 0].shape[0]
 print(f"Количество обычных транзакций: {normal_count}")
 print(f"Количество мошеннических транзакций: {fraud_count}")
 
 sns.boxplot(x='Class', y='Amount', data=data)
-plt.title('Распределение суммы транзакций по классам')
+plt.title('Распределение сумм транзакций по классам')
 plt.show()
 
-
-# Отделяем признаки от целевой переменной
-X = data.drop(['Class', 'id'], axis=1)  # Удаляем столбцы Class и id
+X = data.drop(['Class', 'id'], axis=1)
 y = data['Class']
 
-# Разделяем данные на обучающую и тестовую выборки (80% на обучение, 20% на тест)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-print(f"Размер обучающей выборки: {len(X_train)}")
-print(f"Размер тестовой выборки: {len(X_test)}")
+smote = SMOTE(random_state=42)
+X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
 
-# Создаем объект масштабирования
 scaler = StandardScaler()
-
-# Обучаем масштабирование на обучающих данных и применяем его к обучающей и тестовой выборке
-X_train_scaled = scaler.fit_transform(X_train)
+X_train_resampled_scaled = scaler.fit_transform(X_train_resampled)
 X_test_scaled = scaler.transform(X_test)
 
-
-# Создание и обучение модели
+# Логистическая регрессия
 logistic_model = LogisticRegression(max_iter=1000, random_state=42)
-logistic_model.fit(X_train_scaled, y_train)
+logistic_model.fit(X_train_resampled_scaled, y_train_resampled)
+оценить_модель(logistic_model, X_test_scaled, y_test, "Логистическая регрессия")
 
-# Предсказание на тестовой выборке
-y_pred = logistic_model.predict(X_test_scaled)
-
-# Оценка модели
-print("Оценка производительности модели:")
-print(classification_report(y_test, y_pred))
-print("Матрица ошибок:")
-print(confusion_matrix(y_test, y_pred))
-print(f"Точность модели: {accuracy_score(y_test, y_pred):.4f}")
-
-
-
-# Создание и обучение модели
+# Случайный лес
 rf_model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
-rf_model.fit(X_train, y_train)  # Для случайного леса масштабирование данных не требуется
+rf_model.fit(X_train_resampled, y_train_resampled)
+оценить_модель(rf_model, X_test, y_test, "Случайный лес")
 
-# Предсказание на тестовой выборке
-y_pred_rf = rf_model.predict(X_test)
+# Кросс-валидация с логистической регрессией
+model = LogisticRegression()
+scores = cross_val_score(model, X_train_resampled_scaled, y_train_resampled, cv=5)
+print("Оценки кросс-валидации:", scores)
+print("Среднее значение оценок кросс-валидации:", scores.mean())
 
-# Оценка модели
-print("Оценка производительности модели случайного леса:")
-print(classification_report(y_test, y_pred_rf))
-print("Матрица ошибок:")
-print(confusion_matrix(y_test, y_pred_rf))
-print(f"Точность модели: {accuracy_score(y_test, y_pred_rf):.4f}")
+train_sizes, train_scores, valid_scores = learning_curve(model, X_train_resampled_scaled, y_train_resampled, train_sizes=[0.1, 0.2, 0.4, 0.6, 0.8, 1], cv=5)
+plt.plot(train_sizes, train_scores.mean(axis=1), label='Обучающая выборка')
+plt.plot(train_sizes, valid_scores.mean(axis=1), label='Тестовая выборка')
+plt.legend()
+plt.title('Кривая обучения')
+plt.xlabel('Размер обучающей выборки')
+plt.ylabel('Оценка')
+plt.show()
+
+# Важность признаков в случайном лесе
+rf_model_for_importance = RandomForestClassifier()
+rf_model_for_importance.fit(X_train_resampled_scaled, y_train_resampled)
+feature_importance = rf_model_for_importance.feature_importances_
+sorted_idx = feature_importance.argsort()
+
+plt.figure(figsize=(10, 15))
+plt.barh(range(X_train_resampled_scaled.shape[1]), feature_importance[sorted_idx], align='center')
+plt.yticks(range(X_train_resampled_scaled.shape[1]), X.columns[sorted_idx])
+plt.xlabel('Важность')
+plt.title('Важность признаков в случайном лесе')
+plt.show()
